@@ -49,7 +49,7 @@ print(f'R²: {r2_score(y_test, y_pred):.4f}')
 print(f'MAE: {mean_absolute_error(y_test, y_pred):.4f}\n')
 
 # Polynomial Regression
-poly = PolynomialFeatures(degree=2)
+poly = PolynomialFeatures(degree=1)
 x_poly_train = poly.fit_transform(x_train)
 x_poly_test = poly.transform(x_test)
 
@@ -67,3 +67,12 @@ print(" Polynomial Regression Metrics:")
 print(f'MSE: {mean_squared_error(y_test, y_poly_pred):.4f}')
 print(f'R²: {r2_score(y_test, y_poly_pred):.4f}')
 print(f'MAE: {mean_absolute_error(y_test, y_poly_pred):.4f}')
+
+# poly vs linear comparison
+plt.scatter(y_test, y_pred, label='Linear Regression', alpha=0.5)
+plt.scatter(y_test, y_poly_pred, label='Polynomial Regression', alpha=0.5)
+plt.xlabel('Actual Exam Scores')
+plt.ylabel('Predicted Exam Scores')
+plt.title('Comparison of Linear and Polynomial Regression Predictions')
+plt.legend()
+plt.show()
