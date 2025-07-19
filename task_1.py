@@ -20,3 +20,5 @@ z2 = data['Exam_Score']
 plt.scatter(z1, z2)
 plt.xlabel('Hours Studied')
 plt.ylabel('Exam Score')
+plt.show()
+
