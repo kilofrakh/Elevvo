@@ -41,6 +41,7 @@ plt.scatter(y_test, y_pred)
 plt.xlabel('Actual Exam Scores')
 plt.ylabel('Predicted Exam Scores')
 plt.title('Actual vs Predicted Exam Scores (Linear Regression)')
+plt.legend()
 plt.show()
 
 print(" Linear Regression Metrics:")
@@ -61,6 +62,8 @@ plt.scatter(y_test, y_poly_pred)
 plt.xlabel('Actual Exam Scores')
 plt.ylabel('Predicted Exam Scores')
 plt.title('Actual vs Predicted Exam Scores (Polynomial Regression)')
+plt.legend()
+
 plt.show()
 
 print(" Polynomial Regression Metrics:")
