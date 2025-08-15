@@ -1,305 +1,166 @@
-# Import necessary libraries
 import pandas as pd
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.decomposition import TruncatedSVD
+import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
-from collections import defaultdict
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix, precision_recall_curve, auc, roc_auc_score, roc_curve
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as imbpipeline
+from sklearn.model_selection import GridSearchCV
 
-# Step 1: Load the dataset
-# Download from: https://www.kaggle.com/datasets/prajitdatta/movielens-100k-dataset
-ratings = pd.read_csv('ml-100k/u.data', sep='\t', 
-                      names=['user_id', 'item_id', 'rating', 'timestamp'])
-movies = pd.read_csv('ml-100k/u.item', sep='|', encoding='latin-1',
-                    names=['item_id', 'title', 'release_date', 'video_release', 
-                          'imdb_url', 'unknown', 'Action', 'Adventure', 
-                          'Animation', 'Children', 'Comedy', 'Crime', 
-                          'Documentary', 'Drama', 'Fantasy', 'FilmNoir', 
-                          'Horror', 'Musical', 'Mystery', 'Romance', 
-                          'SciFi', 'Thriller', 'War', 'Western'])
+# Load the dataset
+def load_data():
+    # Download from: https://www.kaggle.com/datasets/architsharma01/loan-approval-prediction-dataset
+    df = pd.read_csv('loan_approval_dataset.csv')
+    print("Initial dataset shape:", df.shape)
+    print("\nFirst 5 rows:")
+    print(df.head())
+    return df
 
-# Step 2: Data exploration and preprocessing
-print("Ratings data:")
-print(ratings.head())
-print("\nMovies data:")
-print(movies.head())
-
-# Check basic statistics
-print("\nRatings statistics:")
-print(ratings.describe())
-
-# Create user-item matrix
-user_item_matrix = ratings.pivot_table(index='user_id', columns='item_id', values='rating')
-print(f"\nUser-item matrix shape: {user_item_matrix.shape}")
-
-# Fill missing values with 0 (assuming no rating means 0)
-user_item_matrix = user_item_matrix.fillna(0)
-
-# Step 3: User-based collaborative filtering
-def user_based_recommendation(user_id, user_item_matrix, movies, n_recommendations=5, min_similar_users=5):
-    # Calculate similarity only using commonly rated items
-    user_ratings = user_item_matrix.loc[user_id]
-    rated_mask = user_ratings > 0
-    common_ratings = user_item_matrix.loc[:, rated_mask]
+# Data preprocessing
+def preprocess_data(df):
+    # Clean column names
+    df.columns = df.columns.str.strip()
     
-    # Only compare with users who have rated at least 10 of the same movies
-    user_similarity = cosine_similarity(common_ratings.fillna(0))
-    user_similarity = pd.DataFrame(user_similarity, 
-                                 index=user_item_matrix.index, 
-                                 columns=user_item_matrix.index)
+    # Drop irrelevant columns
+    df = df.drop(['loan_id'], axis=1)
     
-    # Get similar users (excluding self)
-    similar_users = user_similarity[user_id].sort_values(ascending=False)[1:min_similar_users+1]
+    # Convert categorical columns to numeric
+    cat_cols = ['education', 'self_employed', 'loan_status']
+    le = LabelEncoder()
+    for col in cat_cols:
+        df[col] = le.fit_transform(df[col])
     
-    # Only proceed if we found enough similar users
-    if len(similar_users) < min_similar_users:
-        return []
+    # Handle missing values
+    num_imputer = SimpleImputer(strategy='median')
+    cat_imputer = SimpleImputer(strategy='most_frequent')
     
-    # Get movies rated by similar users but not by our user
-    recommendations = {}
-    for item in user_item_matrix.columns:
-        if user_ratings[item] == 0:  # Not rated by our user
-            # Calculate weighted average rating from similar users
-            weighted_sum = 0
-            similarity_sum = 0
-            for other_user, similarity in similar_users.items():
-                if user_item_matrix.loc[other_user, item] > 0:
-                    weighted_sum += similarity * user_item_matrix.loc[other_user, item]
-                    similarity_sum += similarity
-            
-            if similarity_sum > 0:
-                recommendations[item] = weighted_sum / similarity_sum
+    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
+    categorical_cols = df.select_dtypes(include=['object']).columns
     
-    # Get top recommendations (with at least 3 supporting ratings)
-    recommendations = sorted([(k, v) for k, v in recommendations.items()], 
-                            key=lambda x: x[1], reverse=True)[:n_recommendations]
+    df[numeric_cols] = num_imputer.fit_transform(df[numeric_cols])
+    df[categorical_cols] = cat_imputer.fit_transform(df[categorical_cols])
     
-    # Get movie titles
-    return [(movies[movies['item_id'] == item_id]['title'].values[0], pred_rating)
-            for item_id, pred_rating in recommendations]
+    # Feature engineering
+    df['loan_to_income'] = df['loan_amount'] / (df['income_annum'] + 1)
+    df['loan_term_years'] = df['loan_term'] / 12
+    
+    # Check class distribution
+    print("\nClass distribution:")
+    print(df['loan_status'].value_counts(normalize=True))
+    
+    return df
 
-
-
-# Test the recommendation system
-user_id = 1
-print(f"\nTop 5 recommendations for user {user_id}:")
-recommendations = user_based_recommendation(user_id, user_item_matrix, movies)
-for i, (title, rating) in enumerate(recommendations, 1):
-    print(f"{i}. {title} (predicted rating: {rating:.2f})")
-
-# Step 4: Evaluation using precision at K
-def evaluate_recommendations(user_item_matrix, movies, k=5, test_size=0.2, min_ratings=20):
-    # Only evaluate users with sufficient ratings
-    test_users = [u for u in user_item_matrix.index 
-                 if (user_item_matrix.loc[u] > 0).sum() >= min_ratings]
-    test_users = np.random.choice(test_users, size=int(len(test_users)*test_size), replace=False)
+# Model training and evaluation
+def train_and_evaluate(X_train, X_test, y_train, y_test):
+    # Initialize models
+    models = {
+        'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
+        'Decision Tree': DecisionTreeClassifier(random_state=42),
+        'Random Forest': RandomForestClassifier(random_state=42)
+    }
     
-    precisions = []
-    for user in test_users:
-        # Hide 20% of ratings for testing
-        rated_items = user_item_matrix.loc[user][user_item_matrix.loc[user] > 0].index
-        hide_items = np.random.choice(rated_items, size=int(0.2*len(rated_items)), replace=False)
+    # Train and evaluate each model
+    results = {}
+    for name, model in models.items():
+        # Without SMOTE
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        y_prob = model.predict_proba(X_test)[:, 1]
         
-        # Create train matrix
-        train_matrix = user_item_matrix.copy()
-        train_matrix.loc[user, hide_items] = 0
+        # With SMOTE
+        smote_pipeline = imbpipeline([
+            ('smote', SMOTE(random_state=42)),
+            ('classifier', model)
+        ])
+        smote_pipeline.fit(X_train, y_train)
+        y_pred_smote = smote_pipeline.predict(X_test)
+        y_prob_smote = smote_pipeline.predict_proba(X_test)[:, 1]
         
-        # Get recommendations
-        recs = user_based_recommendation(user, train_matrix, movies, n_recommendations=k)
-        if not recs:
-            continue
-            
-        recommended_items = [movies[movies['title'] == title]['item_id'].values[0] 
-                           for title, _ in recs]
+        # Store results
+        results[name] = {
+            'without_smote': {
+                'report': classification_report(y_test, y_pred, output_dict=True),
+                'confusion_matrix': confusion_matrix(y_test, y_pred),
+                'roc_auc': roc_auc_score(y_test, y_prob)
+            },
+            'with_smote': {
+                'report': classification_report(y_test, y_pred_smote, output_dict=True),
+                'confusion_matrix': confusion_matrix(y_test, y_pred_smote),
+                'roc_auc': roc_auc_score(y_test, y_prob_smote)
+            }
+        }
         
-        # Calculate precision
-        relevant = len(set(recommended_items) & set(hide_items))
-        precisions.append(relevant / k)
-    
-    return np.mean(precisions) if precisions else 0
-
-
-
-
-precision_at_5 = evaluate_recommendations(user_item_matrix, movies)
-print(f"\nPrecision@5: {precision_at_5:.3f}")
-
-# BONUS 1: Item-based collaborative filtering
-def item_based_recommendation(user_id, user_item_matrix, movies, n_recommendations=5):
-    # Calculate item-item similarity
-    item_similarity = cosine_similarity(user_item_matrix.T)
-    item_similarity = pd.DataFrame(item_similarity, 
-                                 index=user_item_matrix.columns, 
-                                 columns=user_item_matrix.columns)
-    
-    # Get items rated by the user
-    user_ratings = user_item_matrix.loc[user_id]
-    rated_items = user_ratings[user_ratings > 0].index
-    
-    # Calculate predicted ratings for unrated items
-    recommendations = {}
-    for item in user_item_matrix.columns:
-        if item not in rated_items:
-            # Find similar items that the user has rated
-            similar_items = item_similarity[item][rated_items]
-            similar_items = similar_items[similar_items > 0]  # Only positive similarities
-            
-            if not similar_items.empty:
-                # Calculate weighted average rating
-                weighted_sum = (similar_items * user_ratings[similar_items.index]).sum()
-                similarity_sum = similar_items.sum()
-                recommendations[item] = weighted_sum / similarity_sum
-    
-    # Get top recommendations
-    recommendations = sorted(recommendations.items(), key=lambda x: x[1], reverse=True)[:n_recommendations]
-    
-    # Get movie titles
-    recommended_movies = []
-    for item_id, pred_rating in recommendations:
-        movie_title = movies[movies['item_id'] == item_id]['title'].values[0]
-        recommended_movies.append((movie_title, pred_rating))
-    
-    return recommended_movies
-
-print("\nItem-based recommendations for user 1:")
-item_based_recs = item_based_recommendation(1, user_item_matrix, movies)
-for i, (title, rating) in enumerate(item_based_recs, 1):
-    print(f"{i}. {title} (predicted rating: {rating:.2f})")
-
-# BONUS 2: Matrix Factorization with SVD
-def svd_recommendation(user_item_matrix, movies, n_factors=50, n_recommendations=5):
-    # Perform SVD
-    svd = TruncatedSVD(n_components=n_factors, random_state=42)
-    svd.fit(user_item_matrix)
-    
-    # Reconstruct the matrix
-    user_factors = svd.transform(user_item_matrix)
-    item_factors = svd.components_.T
-    reconstructed_matrix = np.dot(user_factors, item_factors.T)
-    
-    # Convert back to DataFrame
-    reconstructed_matrix = pd.DataFrame(reconstructed_matrix, 
-                                      index=user_item_matrix.index,
-                                      columns=user_item_matrix.columns)
-    
-    # Function to get recommendations for a user
-    def get_recommendations(user_id):
-        user_ratings = user_item_matrix.loc[user_id]
-        predicted_ratings = reconstructed_matrix.loc[user_id]
+        # Plot ROC curve
+        fpr, tpr, _ = roc_curve(y_test, y_prob)
+        fpr_smote, tpr_smote, _ = roc_curve(y_test, y_prob_smote)
         
-        # Find items not rated by user
-        unrated_items = user_ratings[user_ratings == 0].index
+        plt.figure(figsize=(8, 6))
+        plt.plot(fpr, tpr, label=f'{name} (AUC = {results[name]["without_smote"]["roc_auc"]:.2f})')
+        plt.plot(fpr_smote, tpr_smote, label=f'{name} with SMOTE (AUC = {results[name]["with_smote"]["roc_auc"]:.2f})')
+        plt.plot([0, 1], [0, 1], 'k--')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'ROC Curve - {name}')
+        plt.legend()
+        plt.show()
+    
+    return results
+
+# Main function
+def main():
+    # Load and preprocess data
+    df = load_data()
+    df = preprocess_data(df)
+    
+    # Prepare features and target
+    X = df.drop(['loan_status'], axis=1)
+    y = df['loan_status']
+    
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y)
+    
+    # Standardize numerical features
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+    
+    # Train and evaluate models
+    results = train_and_evaluate(X_train, X_test, y_train, y_test)
+    
+    # Print results
+    for model_name, model_results in results.items():
+        print(f"\n{'-'*50}")
+        print(f"Model: {model_name}")
+        print("\nWithout SMOTE:")
+        print(f"Classification Report:\n{pd.DataFrame(model_results['without_smote']['report'])}")
+        print(f"Confusion Matrix:\n{model_results['without_smote']['confusion_matrix']}")
+        print(f"ROC AUC: {model_results['without_smote']['roc_auc']:.3f}")
         
-        # Get top predicted ratings for unrated items
-        recommendations = predicted_ratings[unrated_items].sort_values(ascending=False)[:n_recommendations]
-        
-        # Get movie titles
-        recommended_movies = []
-        for item_id, pred_rating in recommendations.items():
-            movie_title = movies[movies['item_id'] == item_id]['title'].values[0]
-            recommended_movies.append((movie_title, pred_rating))
-        
-        return recommended_movies
+        print("\nWith SMOTE:")
+        print(f"Classification Report:\n{pd.DataFrame(model_results['with_smote']['report'])}")
+        print(f"Confusion Matrix:\n{model_results['with_smote']['confusion_matrix']}")
+        print(f"ROC AUC: {model_results['with_smote']['roc_auc']:.3f}")
     
-    return get_recommendations
+    # Feature importance for tree-based models
+    rf = RandomForestClassifier(random_state=42)
+    rf.fit(X_train, y_train)
+    
+    feature_importance = pd.DataFrame({
+        'Feature': df.drop(['loan_status'], axis=1).columns,
+        'Importance': rf.feature_importances_
+    }).sort_values('Importance', ascending=False)
+    
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x='Importance', y='Feature', data=feature_importance)
+    plt.title('Feature Importance - Random Forest')
+    plt.show()
 
-svd_recommender = svd_recommendation(user_item_matrix, movies)
-print("\nSVD-based recommendations for user 1:")
-svd_recs = svd_recommender(1)
-for i, (title, rating) in enumerate(svd_recs, 1):
-    print(f"{i}. {title} (predicted rating: {rating:.2f})")
-
-# Modified SVD evaluation function to handle NaN values
-def evaluate_svd(user_item_matrix, n_factors=50, test_size=0.2):
-    # Create train-test split
-    train_matrix = user_item_matrix.copy()
-    test_matrix = pd.DataFrame(np.zeros(user_item_matrix.shape),
-                             index=user_item_matrix.index,
-                             columns=user_item_matrix.columns)
-    
-    for user in user_item_matrix.index:
-        rated_items = user_item_matrix.loc[user][user_item_matrix.loc[user] > 0].index
-        if len(rated_items) > 10:  # Only evaluate users with enough ratings
-            test_items = np.random.choice(rated_items, size=int(test_size*len(rated_items)), replace=False)
-            train_matrix.loc[user, test_items] = 0
-            test_matrix.loc[user, test_items] = user_item_matrix.loc[user, test_items]
-    
-    # Remove users with no ratings in test set
-    test_users = test_matrix[(test_matrix > 0).any(axis=1)].index
-    if len(test_users) == 0:
-        return np.nan  # No users to evaluate
-    
-    # Train SVD
-    svd = TruncatedSVD(n_components=n_factors, random_state=42)
-    svd.fit(train_matrix)
-    
-    # Reconstruct matrix
-    user_factors = svd.transform(train_matrix)
-    item_factors = svd.components_.T
-    reconstructed_matrix = np.dot(user_factors, item_factors.T)
-    
-    # Calculate RMSE on test set
-    test_ratings = []
-    pred_ratings = []
-    for user in test_users:
-        for item in test_matrix.columns:
-            actual = test_matrix.loc[user, item]
-            if actual > 0:  # Only consider actual ratings
-                predicted = reconstructed_matrix[user_item_matrix.index.get_loc(user), 
-                                              user_item_matrix.columns.get_loc(item)]
-                test_ratings.append(actual)
-                pred_ratings.append(predicted)
-    
-    if not test_ratings:  # No test ratings found
-        return np.nan
-    
-    rmse = np.sqrt(mean_squared_error(test_ratings, pred_ratings))
-    return rmse
-
-# Modified recommendation functions to prevent perfect scores
-def user_based_recommendation(user_id, user_item_matrix, movies, n_recommendations=5):
-    # Normalize ratings to reduce perfect score predictions
-    user_mean = user_item_matrix.loc[user_id][user_item_matrix.loc[user_id] > 0].mean()
-    user_similarity = cosine_similarity(user_item_matrix)
-    user_similarity = pd.DataFrame(user_similarity, 
-                                 index=user_item_matrix.index, 
-                                 columns=user_item_matrix.index)
-    
-    # Get similar users (excluding self)
-    similar_users = user_similarity[user_id].sort_values(ascending=False)[1:11]
-    
-    recommendations = defaultdict(float)
-    item_counts = defaultdict(int)
-    
-    for other_user, similarity in similar_users.items():
-        for item in user_item_matrix.columns:
-            if (user_item_matrix.loc[other_user, item] > 0 and 
-                user_item_matrix.loc[user_id, item] == 0):
-                recommendations[item] += similarity * (user_item_matrix.loc[other_user, item] - user_mean)
-                item_counts[item] += 1
-    
-    # Average the recommendations
-    for item in recommendations:
-        if item_counts[item] > 0:
-            recommendations[item] = user_mean + (recommendations[item] / item_counts[item])
-            # Clip to rating range
-            recommendations[item] = max(1, min(5, recommendations[item]))
-    
-    # Get top recommendations
-    recommendations = sorted(recommendations.items(), key=lambda x: x[1], reverse=True)[:n_recommendations]
-    
-    # Get movie titles
-    recommended_movies = []
-    for item_id, pred_rating in recommendations:
-        movie_title = movies[movies['item_id'] == item_id]['title'].values[0]
-        recommended_movies.append((movie_title, pred_rating))
-    
-    return recommended_movies
-
-# After making these changes, run the evaluation again
-try:
-    svd_rmse = evaluate_svd(user_item_matrix)
-    print(f"\nSVD RMSE: {svd_rmse:.3f}")
-except Exception as e:
-    print(f"\nError in SVD evaluation: {str(e)}")
+if __name__ == "__main__":
+    main()
